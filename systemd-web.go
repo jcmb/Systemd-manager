@@ -465,7 +465,7 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	bind := flag.String("bind", "", "host or IP to listen on (overrides -address if set)")
-	address := flag.String("address", "0.0.0.0", "host or IP to listen on (use -bind for the same; both kept for compatibility)")
+	address := flag.String("address", "127.0.0.1", "host or IP to listen on (use -bind for the same; both kept for compatibility)")
 	port := flag.Int("port", 6999, "TCP port to listen on")
 	flag.Parse()
 
