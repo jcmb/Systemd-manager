@@ -1,0 +1,15 @@
+[Unit]
+Description=Embedded Systemd Web Manager
+After=network.target
+
+[Service]
+Type=simple
+# Run as root so it has permissions to execute systemctl start/stop/restart
+User=root
+# Execute the binary with our new flags
+ExecStart=/usr/local/bin/systemd-web --bind=0.0.0.0 --port=6999
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
