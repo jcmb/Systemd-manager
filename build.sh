@@ -19,6 +19,6 @@ LDFLAGS=(-ldflags "-X main.version=${VERSION}")
 
 GOOS=linux GOARCH=arm go build "${LDFLAGS[@]}" -o bin/systemd-web-arm systemd-web.go
 GOOS=linux GOARCH=arm64 go build "${LDFLAGS[@]}" -o bin/systemd-web-arm64 systemd-web.go
-go build "${LDFLAGS[@]}" -o bin/systemd-web systemd-web.go
+#go build "${LDFLAGS[@]}" -o bin/systemd-web systemd-web.go
 
 echo "Built version ${VERSION}"
