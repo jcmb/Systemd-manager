@@ -2,14 +2,19 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"html/template"
 	"log"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 )
+
+// version is set at link time by build.sh: -X main.version=...
+var version = "dev"
 
 // ServiceData holds the information passed to the HTML template
 type ServiceData struct {
@@ -464,14 +469,18 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-	bind := flag.String("bind", "", "host or IP to listen on (overrides -address if set)")
-	address := flag.String("address", "0.0.0.0", "host or IP to listen on (use -bind for the same; both kept for compatibility)")
+	showVersion := flag.Bool("version", false, "print version and exit")
+	bind := flag.String("bind", "127.0.0.1", "host or IP to listen on")
 	port := flag.Int("port", 6999, "TCP port to listen on")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println(version)
+		os.Exit(0)
+	}
 
-	listenHost := *address
-	if *bind != "" {
-		listenHost = *bind
+	listenHost := strings.TrimSpace(*bind)
+	if listenHost == "" {
+		listenHost = "127.0.0.1"
 	}
 	bindAddr := net.JoinHostPort(listenHost, strconv.Itoa(*port))
 
@@ -480,6 +489,10 @@ func main() {
 	http.HandleFunc("/dependencies", dependenciesHandler)
 	http.HandleFunc("/action", actionHandler)
 
-	log.Printf("Starting Embedded Systemd Manager on %s...\n", bindAddr)
-	log.Fatal(http.ListenAndServe(bindAddr, nil))
+	ln, err := net.Listen("tcp", bindAddr)
+	if err != nil {
+		log.Fatalf("listen %s: %v", bindAddr, err)
+	}
+	log.Printf("Starting systemd-web %s on %s\n", version, ln.Addr().String())
+	log.Fatal(http.Serve(ln, nil))
 }

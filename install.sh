@@ -8,6 +8,8 @@ fi
 
 echo "Installing Embedded Systemd Manager..."
 
+# Build ./build.sh first on a machine with Go and git so the binary reports an auto version (commit count + SHA).
+
 # 1. Move the binary to standard executable path
 cp systemd-web /usr/local/bin/
 chmod +x /usr/local/bin/systemd-web
@@ -21,7 +23,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/systemd-web --bind=0.0.0.0 --port=6999
+ExecStart=/usr/local/bin/systemd-web --bind=127.0.0.1 --port=6999
 Restart=on-failure
 RestartSec=5
 
