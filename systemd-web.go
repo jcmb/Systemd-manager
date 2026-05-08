@@ -119,7 +119,8 @@ const themeAssets = `
 		
 		.header-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--table-border); padding-bottom: 10px; margin-bottom: 20px; }
 		.header-bar h2 { margin: 0; }
-		.app-version { font-size: 12px; color: var(--c-disabled); margin-top: 6px; font-family: monospace; }
+		.site-top { position: sticky; top: 0; z-index: 100; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; margin-bottom: 16px; background: var(--th-bg); border: 1px solid var(--table-border); border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+		.site-top .mono { font-family: monospace; font-size: 13px; }
 		.theme-selector { display: flex; align-items: center; gap: 10px; font-size: 14px; }
 		.theme-selector select { padding: 4px 8px; border-radius: 4px; border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--text-color); cursor: pointer; }
 
@@ -170,10 +171,17 @@ const dashboardTemplate = `
 	</style>
 </head>
 <body>
+	<!-- systemd-web {{.Version}} -->
+	<div class="site-top">
+		<span><strong>systemd-web</strong> <span class="mono">{{.Version}}</span></span>
+		<form method="POST" action="/action" style="display:inline;">
+			{{if .ShowAll}}<input type="hidden" name="redirect" value="all">{{end}}
+			<button type="submit" name="action" value="daemon-reload">Daemon Reload</button>
+		</form>
+	</div>
 	<div class="header-bar">
 		<div>
 			<h2>Embedded Systemd Manager</h2>
-			<div class="app-version">Version {{.Version}}</div>
 		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
@@ -186,10 +194,6 @@ const dashboardTemplate = `
 	</div>
 
 	<div class="main-actions">
-		<form method="POST" action="/action">
-			{{if .ShowAll}}<input type="hidden" name="redirect" value="all">{{end}}
-			<button type="submit" name="action" value="daemon-reload">Daemon Reload</button>
-		</form>
 		<span class="view-toggle">
 			{{if .ShowAll}}
 				Showing all {{len .Services}} services.
@@ -321,11 +325,19 @@ const statusTemplate = `
 	</style>
 </head>
 <body>
+	<!-- systemd-web {{.Version}} -->
+	<div class="site-top">
+		<span><strong>systemd-web</strong> <span class="mono">{{.Version}}</span></span>
+		<form method="POST" action="/action" style="display:inline;">
+			<input type="hidden" name="service" value="{{.Name}}">
+			<input type="hidden" name="redirect" value="status">
+			<button type="submit" name="action" value="daemon-reload">Daemon Reload</button>
+		</form>
+	</div>
 	<div class="header-bar">
 		<div>
 			<a href="/" style="font-size: 16px; margin-bottom: 8px; display: inline-block;">&#8592; Back to Dashboard</a>
 			<h2>Detailed Information for {{.Name}}</h2>
-			<div class="app-version">Version {{.Version}}</div>
 		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
@@ -375,11 +387,19 @@ const dependenciesTemplate = `
 	</style>
 </head>
 <body>
+	<!-- systemd-web {{.Version}} -->
+	<div class="site-top">
+		<span><strong>systemd-web</strong> <span class="mono">{{.Version}}</span></span>
+		<form method="POST" action="/action" style="display:inline;">
+			<input type="hidden" name="service" value="{{.Name}}">
+			<input type="hidden" name="redirect" value="deps">
+			<button type="submit" name="action" value="daemon-reload">Daemon Reload</button>
+		</form>
+	</div>
 	<div class="header-bar">
 		<div>
 			<a href="/" style="font-size: 16px; margin-bottom: 8px; display: inline-block;">&#8592; Back to Dashboard</a>
 			<h2>Reverse Dependencies for {{.Name}}</h2>
-			<div class="app-version">Version {{.Version}}</div>
 		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
@@ -677,6 +697,16 @@ func applyServiceProps(row *ServiceData, p map[string]string) {
 	row.Tasks, row.TasksSort = formatTasks(p["TasksCurrent"], p["TasksMax"])
 }
 
+// setHTMLResponseHeaders avoids stale HTML from proxies or embedded browsers and
+// exposes the build id for checks that skip the document body (e.g. curl -I).
+func setHTMLResponseHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/html; charset=utf-8")
+	h.Set("Cache-Control", "no-store, max-age=0, must-revalidate")
+	h.Set("Pragma", "no-cache")
+	h.Set("X-Application-Version", version)
+}
+
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -760,11 +790,14 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	t.Execute(w, struct {
+	setHTMLResponseHeaders(w)
+	if err := t.Execute(w, struct {
 		Services []ServiceData
 		ShowAll  bool
 		Version  string
-	}{Services: services, ShowAll: showAll, Version: version})
+	}{Services: services, ShowAll: showAll, Version: version}); err != nil {
+		log.Printf("template index: %v", err)
+	}
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
@@ -803,7 +836,10 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	t.Execute(w, data)
+	setHTMLResponseHeaders(w)
+	if err := t.Execute(w, data); err != nil {
+		log.Printf("template status: %v", err)
+	}
 }
 
 func dependenciesHandler(w http.ResponseWriter, r *http.Request) {
@@ -837,7 +873,10 @@ func dependenciesHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
-	t.Execute(w, data)
+	setHTMLResponseHeaders(w)
+	if err := t.Execute(w, data); err != nil {
+		log.Printf("template dependencies: %v", err)
+	}
 }
 
 func actionHandler(w http.ResponseWriter, r *http.Request) {
@@ -876,6 +915,8 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case redirect == "status" && isValidServiceName(service):
 		target = "/status?service=" + service
+	case redirect == "deps" && isValidServiceName(service):
+		target = "/dependencies?service=" + service
 	case redirect == "all":
 		target = "/?all=1"
 	}
@@ -885,7 +926,7 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 func main() {
 	showVersion := flag.Bool("version", false, "print version and exit")
 	bind := flag.String("bind", "127.0.0.1", "host or IP to listen on")
-	port := flag.Int("port", 6999, "TCP port to listen on")
+	port := flag.Int("port", 7002, "TCP port to listen on")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println(version)

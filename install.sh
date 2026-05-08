@@ -23,7 +23,7 @@ After=network.target
 [Service]
 Type=simple
 User=root
-ExecStart=/usr/local/bin/systemd-web --bind=127.0.0.1 --port=6999
+ExecStart=/usr/local/bin/systemd-web --bind=127.0.0.1 --port=7002
 Restart=on-failure
 RestartSec=5
 
@@ -36,4 +36,4 @@ systemctl daemon-reload
 systemctl enable systemd-web.service
 systemctl restart systemd-web.service
 
-echo "Installation complete! The web manager is now running on port 6999."
+echo "Installation complete! The web manager is now running on port 7002."
