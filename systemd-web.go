@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // version is set at link time by build.sh: -X main.version=...
@@ -23,6 +24,18 @@ type ServiceData struct {
 	Sub         string
 	Description string
 	Class       string
+	// Extended metrics (from systemctl show)
+	Enabled       string
+	Uptime        string
+	UptimeSort    int64 // seconds since active (for sorting); -1 if n/a
+	Restarts      string
+	RestartsSort  int
+	MemCurrent    string  // MiB
+	MemPeak       string  // MiB
+	MemCurSort    float64 // MiB for sorting; -1 if n/a
+	MemPeakSort   float64 // MiB for sorting; -1 if n/a
+	Tasks         string
+	TasksSort     int
 }
 
 // Common CSS/JS injected into all templates to handle themes
@@ -142,10 +155,14 @@ const dashboardTemplate = `
 	<title>Systemd Manager</title>
 	` + themeAssets + `
 	<style>
-		table { border-collapse: collapse; width: 100%; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-		th, td { text-align: left; padding: 12px; border-bottom: 1px solid var(--table-border); }
-		th { background-color: var(--th-bg); cursor: pointer; user-select: none; }
+		.table-wrap { overflow-x: auto; margin-bottom: 20px; }
+		table { border-collapse: collapse; width: 100%; min-width: 1220px; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+		th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--table-border); font-size: 14px; }
+		th { background-color: var(--th-bg); cursor: pointer; user-select: none; white-space: nowrap; }
 		th:hover { background-color: var(--th-hover); }
+		td.mono-sm { font-family: monospace; font-size: 13px; }
+		td.num { text-align: right; font-variant-numeric: tabular-nums; }
+		th.num { text-align: right; }
 	</style>
 </head>
 <body>
@@ -161,13 +178,20 @@ const dashboardTemplate = `
 		</div>
 	</div>
 
-	<table id="serviceTable">
+	<div class="table-wrap">
+		<table id="serviceTable">
 		<thead>
 			<tr>
-				<th onclick="sortTable(0)">Service Name &#x21D5;</th>
+				<th onclick="sortTable(0)">Service &#x21D5;</th>
 				<th onclick="sortTable(1)">Status &#x21D5;</th>
 				<th onclick="sortTable(2)">State &#x21D5;</th>
-				<th onclick="sortTable(3)">Description &#x21D5;</th>
+				<th onclick="sortTable(3)">Uptime &#x21D5;</th>
+				<th class="num" onclick="sortTable(4)">Restarts &#x21D5;</th>
+				<th class="num" onclick="sortTable(5)">Mem cur (MiB) &#x21D5;</th>
+				<th class="num" onclick="sortTable(6)">Mem peak (MiB) &#x21D5;</th>
+				<th onclick="sortTable(7)">Enabled &#x21D5;</th>
+				<th class="num" onclick="sortTable(8)">Tasks &#x21D5;</th>
+				<th onclick="sortTable(9)">Description &#x21D5;</th>
 				<th>Controls</th>
 			</tr>
 		</thead>
@@ -177,6 +201,12 @@ const dashboardTemplate = `
 				<td><a class="mono" href="/status?service={{.Name}}">{{.Name}}</a></td>
 				<td class="{{.Class}}">{{.Active}}</td>
 				<td>{{.Sub}}</td>
+				<td class="mono-sm" data-sort="{{.UptimeSort}}">{{.Uptime}}</td>
+				<td class="num" data-sort="{{.RestartsSort}}">{{.Restarts}}</td>
+				<td class="num mono-sm" data-sort="{{printf "%.6f" .MemCurSort}}">{{.MemCurrent}}</td>
+				<td class="num mono-sm" data-sort="{{printf "%.6f" .MemPeakSort}}">{{.MemPeak}}</td>
+				<td data-sort="{{.Enabled}}">{{.Enabled}}</td>
+				<td class="num" data-sort="{{.TasksSort}}">{{.Tasks}}</td>
 				<td>{{.Description}}</td>
 				<td style="white-space: nowrap;">
 					<form method="POST" action="/action" style="display:inline;">
@@ -187,20 +217,38 @@ const dashboardTemplate = `
 					</form>
 					<form method="GET" action="/dependencies" style="display:inline;">
 						<input type="hidden" name="service" value="{{.Name}}">
-						<button type="submit">Dependencies</button>
+						<button type="submit">Deps</button>
 					</form>
 				</td>
 			</tr>
 			{{end}}
 		</tbody>
 	</table>
+	</div>
 
 	<script>
+		function cellSortVal(td) {
+			var ds = td.getAttribute("data-sort");
+			if (ds !== null && ds !== "") {
+				var n = parseFloat(ds, 10);
+				if (!isNaN(n)) return { t: "n", v: n, s: ds };
+				return { t: "s", v: (ds + "").toLowerCase(), s: ds };
+			}
+			return { t: "s", v: td.textContent.trim().toLowerCase(), s: "" };
+		}
+		function cmpCell(a, b) {
+			if (a.t === "n" && b.t === "n") return a.v - b.v;
+			if (a.t === "n") return -1;
+			if (b.t === "n") return 1;
+			if (a.v < b.v) return -1;
+			if (a.v > b.v) return 1;
+			return 0;
+		}
 		function sortTable(n) {
 			var table, rows, switching, i, x, y, shouldSwitch, dir, switchcount = 0;
 			table = document.getElementById("serviceTable");
 			switching = true;
-			dir = "asc"; 
+			dir = "asc";
 			while (switching) {
 				switching = false;
 				rows = table.rows;
@@ -208,16 +256,17 @@ const dashboardTemplate = `
 					shouldSwitch = false;
 					x = rows[i].getElementsByTagName("TD")[n];
 					y = rows[i + 1].getElementsByTagName("TD")[n];
+					var cx = cellSortVal(x), cy = cellSortVal(y);
 					if (dir == "asc") {
-						if (x.innerHTML.toLowerCase() > y.innerHTML.toLowerCase()) { shouldSwitch = true; break; }
+						if (cmpCell(cx, cy) > 0) { shouldSwitch = true; break; }
 					} else {
-						if (x.innerHTML.toLowerCase() < y.innerHTML.toLowerCase()) { shouldSwitch = true; break; }
+						if (cmpCell(cx, cy) < 0) { shouldSwitch = true; break; }
 					}
 				}
 				if (shouldSwitch) {
 					rows[i].parentNode.insertBefore(rows[i + 1], rows[i]);
 					switching = true;
-					switchcount ++;      
+					switchcount++;
 				} else {
 					if (switchcount == 0 && dir == "asc") {
 						dir = "desc";
@@ -317,6 +366,271 @@ func isValidServiceName(name string) bool {
 	return true
 }
 
+const systemctlShowChunk = 40
+
+func parseSystemctlShowBlocks(data string) []map[string]string {
+	var blocks []map[string]string
+	cur := make(map[string]string)
+	flush := func() {
+		if len(cur) == 0 {
+			return
+		}
+		blocks = append(blocks, cur)
+		cur = make(map[string]string)
+	}
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		idx := strings.IndexByte(line, '=')
+		if idx <= 0 {
+			continue
+		}
+		key, val := line[:idx], line[idx+1:]
+		if key == "Id" {
+			if _, ok := cur["Id"]; ok {
+				flush()
+			}
+		}
+		cur[key] = val
+	}
+	flush()
+	return blocks
+}
+
+func fetchServiceProperties(names []string) map[string]map[string]string {
+	out := make(map[string]map[string]string)
+	for i := 0; i < len(names); i += systemctlShowChunk {
+		end := i + systemctlShowChunk
+		if end > len(names) {
+			end = len(names)
+		}
+		chunk := names[i:end]
+		args := []string{
+			"show", "--no-pager",
+			"-p", "Id",
+			"-p", "ActiveState",
+			"-p", "SubState",
+			"-p", "ActiveEnterTimestamp",
+			"-p", "NRestarts",
+			"-p", "MemoryCurrent",
+			"-p", "MemoryPeak",
+			"-p", "UnitFileState",
+			"-p", "TasksCurrent",
+			"-p", "TasksMax",
+		}
+		args = append(args, chunk...)
+		cmd := exec.Command("systemctl", args...)
+		data, err := cmd.Output()
+		if err != nil {
+			log.Printf("systemctl show batch %d-%d: %v", i, end, err)
+			continue
+		}
+		for _, m := range parseSystemctlShowBlocks(string(data)) {
+			if id := strings.TrimSpace(m["Id"]); id != "" {
+				out[id] = m
+			}
+		}
+	}
+	return out
+}
+
+func shortUnitFileState(s string) string {
+	s = strings.TrimSpace(s)
+	switch s {
+	case "enabled", "enabled-runtime":
+		return "yes"
+	case "disabled":
+		return "no"
+	case "static":
+		return "static"
+	case "indirect":
+		return "indirect"
+	case "alias":
+		return "alias"
+	case "generated":
+		return "gen"
+	case "transient":
+		return "trans"
+	case "linked", "linked-runtime":
+		return "linked"
+	case "masked", "masked-runtime":
+		return "masked"
+	default:
+		if s == "" {
+			return "—"
+		}
+		return s
+	}
+}
+
+func parseByteProp(s string) (uint64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" || strings.EqualFold(s, "[not set]") {
+		return 0, false
+	}
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+const bytesPerMiB = 1024 * 1024
+
+func formatMiB(bytes uint64, ok bool) string {
+	if !ok {
+		return "—"
+	}
+	return fmt.Sprintf("%.2f MiB", float64(bytes)/bytesPerMiB)
+}
+
+func mibSort(bytes uint64, ok bool) float64 {
+	if !ok {
+		return -1
+	}
+	return float64(bytes) / bytesPerMiB
+}
+
+func parseActiveEnterTimestamp(val string) (time.Time, bool) {
+	val = strings.TrimSpace(val)
+	if val == "" || strings.EqualFold(val, "n/a") {
+		return time.Time{}, false
+	}
+	layouts := []string{
+		"Mon 2006-01-02 15:04:05 MST",
+		"Mon 2006-01-02 15:04:05 Z07:00",
+		"Mon Jan 2 15:04:05 MST 2006",
+		"Mon Jan _2 15:04:05 MST 2006",
+	}
+	for _, layout := range layouts {
+		if t, err := time.ParseInLocation(layout, val, time.Local); err == nil {
+			return t, true
+		}
+	}
+	for _, layout := range layouts {
+		if t, err := time.Parse(layout, val); err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func humanizeDurationSince(t time.Time) string {
+	if t.IsZero() {
+		return "—"
+	}
+	d := time.Since(t)
+	if d < 0 {
+		d = 0
+	}
+	sec := int64(d / time.Second)
+	if sec < 60 {
+		return fmt.Sprintf("%ds", sec)
+	}
+	m := sec / 60
+	sec %= 60
+	if m < 60 {
+		return fmt.Sprintf("%dm %ds", m, sec)
+	}
+	h := m / 60
+	m %= 60
+	if h < 48 {
+		return fmt.Sprintf("%dh %dm", h, m)
+	}
+	days := h / 24
+	h %= 24
+	return fmt.Sprintf("%dd %dh", days, h)
+}
+
+func formatTasks(cur, max string) (display string, sortN int) {
+	cur = strings.TrimSpace(cur)
+	max = strings.TrimSpace(max)
+	if cur == "" || strings.EqualFold(cur, "[not set]") {
+		return "—", -1
+	}
+	n, err := strconv.Atoi(cur)
+	if err != nil {
+		return "—", -1
+	}
+	if max == "" || strings.EqualFold(max, "[not set]") || strings.EqualFold(max, "infinity") {
+		return cur, n
+	}
+	return cur + " / " + max, n
+}
+
+// servicePassesFilter keeps rows that are running now or are enabled / static at the unit-file level.
+func servicePassesFilter(activeFromList string, p map[string]string) bool {
+	if strings.TrimSpace(activeFromList) == "active" {
+		return true
+	}
+	if p == nil {
+		return false
+	}
+	switch strings.TrimSpace(p["UnitFileState"]) {
+	case "enabled", "enabled-runtime", "static":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyServiceProps(row *ServiceData, p map[string]string) {
+	if len(p) == 0 {
+		row.Enabled = "—"
+		row.Uptime = "—"
+		row.UptimeSort = -1
+		row.Restarts = "—"
+		row.RestartsSort = 0
+		row.MemCurrent = "—"
+		row.MemPeak = "—"
+		row.MemCurSort = -1
+		row.MemPeakSort = -1
+		row.Tasks = "—"
+		row.TasksSort = -1
+		return
+	}
+
+	row.Enabled = shortUnitFileState(p["UnitFileState"])
+
+	active := strings.TrimSpace(p["ActiveState"])
+	if active == "active" {
+		if t, ok := parseActiveEnterTimestamp(p["ActiveEnterTimestamp"]); ok {
+			row.Uptime = humanizeDurationSince(t)
+			row.UptimeSort = int64(time.Since(t).Seconds())
+		} else {
+			row.Uptime = "—"
+			row.UptimeSort = -1
+		}
+	} else {
+		row.Uptime = "—"
+		row.UptimeSort = -1
+	}
+
+	nr, hasNR := p["NRestarts"]
+	nr = strings.TrimSpace(nr)
+	if !hasNR || nr == "" || strings.EqualFold(nr, "[not set]") {
+		row.Restarts = "—"
+		row.RestartsSort = -1
+	} else if n, err := strconv.Atoi(nr); err == nil {
+		row.Restarts = nr
+		row.RestartsSort = n
+	} else {
+		row.Restarts = nr
+		row.RestartsSort = 0
+	}
+
+	mc, mcOk := parseByteProp(p["MemoryCurrent"])
+	mp, mpOk := parseByteProp(p["MemoryPeak"])
+	row.MemCurrent = formatMiB(mc, mcOk)
+	row.MemPeak = formatMiB(mp, mpOk)
+	row.MemCurSort = mibSort(mc, mcOk)
+	row.MemPeakSort = mibSort(mp, mpOk)
+
+	row.Tasks, row.TasksSort = formatTasks(p["TasksCurrent"], p["TasksMax"])
+}
+
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -332,16 +646,17 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 
 	lines := strings.Split(string(out), "\n")
 	var services []ServiceData
+	var names []string
 
 	for _, line := range lines {
 		line = strings.ReplaceAll(line, "●", "")
 		line = strings.ReplaceAll(line, "*", "")
 		line = strings.TrimSpace(line)
-		
+
 		if line == "" {
 			continue
 		}
-		
+
 		fields := strings.Fields(line)
 		if len(fields) >= 4 {
 			name := fields[0]
@@ -353,6 +668,10 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 				desc = strings.Join(fields[4:], " ")
 			}
 
+			if !isValidServiceName(name) {
+				continue
+			}
+
 			class := "disabled"
 			if active == "active" {
 				class = "running"
@@ -362,11 +681,30 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 				class = "not-found"
 			}
 
+			names = append(names, name)
 			services = append(services, ServiceData{
 				Name: name, Active: active, Sub: sub, Description: desc, Class: class,
 			})
 		}
 	}
+
+	props := fetchServiceProperties(names)
+	for i := range services {
+		if p, ok := props[services[i].Name]; ok {
+			applyServiceProps(&services[i], p)
+		} else {
+			applyServiceProps(&services[i], nil)
+		}
+	}
+
+	filtered := services[:0]
+	for i := range services {
+		p, _ := props[services[i].Name]
+		if servicePassesFilter(services[i].Active, p) {
+			filtered = append(filtered, services[i])
+		}
+	}
+	services = filtered
 
 	t, err := template.New("index").Parse(dashboardTemplate)
 	if err != nil {
