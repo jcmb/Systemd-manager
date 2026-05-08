@@ -119,6 +119,7 @@ const themeAssets = `
 		
 		.header-bar { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--table-border); padding-bottom: 10px; margin-bottom: 20px; }
 		.header-bar h2 { margin: 0; }
+		.app-version { font-size: 12px; color: var(--c-disabled); margin-top: 6px; font-family: monospace; }
 		.theme-selector { display: flex; align-items: center; gap: 10px; font-size: 14px; }
 		.theme-selector select { padding: 4px 8px; border-radius: 4px; border: 1px solid var(--btn-border); background: var(--btn-bg); color: var(--text-color); cursor: pointer; }
 
@@ -152,7 +153,7 @@ const dashboardTemplate = `
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Systemd Manager</title>
+	<title>Systemd Manager · {{.Version}}</title>
 	` + themeAssets + `
 	<style>
 		.table-wrap { overflow-x: auto; margin-bottom: 20px; }
@@ -170,7 +171,10 @@ const dashboardTemplate = `
 </head>
 <body>
 	<div class="header-bar">
-		<h2>Embedded Systemd Manager</h2>
+		<div>
+			<h2>Embedded Systemd Manager</h2>
+			<div class="app-version">Version {{.Version}}</div>
+		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
 			<select id="theme-select" onchange="changeTheme(this.value)">
@@ -307,7 +311,7 @@ const statusTemplate = `
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Status: {{.Name}}</title>
+	<title>Status: {{.Name}} · {{.Version}}</title>
 	` + themeAssets + `
 	<style>
 		pre { background: var(--pre-bg); padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--pre-border); font-family: monospace; font-size: 14px;}
@@ -321,6 +325,7 @@ const statusTemplate = `
 		<div>
 			<a href="/" style="font-size: 16px; margin-bottom: 8px; display: inline-block;">&#8592; Back to Dashboard</a>
 			<h2>Detailed Information for {{.Name}}</h2>
+			<div class="app-version">Version {{.Version}}</div>
 		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
@@ -363,7 +368,7 @@ const dependenciesTemplate = `
 <!DOCTYPE html>
 <html>
 <head>
-	<title>Dependencies: {{.Name}}</title>
+	<title>Dependencies: {{.Name}} · {{.Version}}</title>
 	` + themeAssets + `
 	<style>
 		pre { background: var(--pre-bg); padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre; border: 1px solid var(--pre-border); font-family: monospace; font-size: 14px;}
@@ -374,6 +379,7 @@ const dependenciesTemplate = `
 		<div>
 			<a href="/" style="font-size: 16px; margin-bottom: 8px; display: inline-block;">&#8592; Back to Dashboard</a>
 			<h2>Reverse Dependencies for {{.Name}}</h2>
+			<div class="app-version">Version {{.Version}}</div>
 		</div>
 		<div class="theme-selector">
 			<label for="theme-select">Theme:</label>
@@ -757,7 +763,8 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	t.Execute(w, struct {
 		Services []ServiceData
 		ShowAll  bool
-	}{Services: services, ShowAll: showAll})
+		Version  string
+	}{Services: services, ShowAll: showAll, Version: version})
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
@@ -780,13 +787,15 @@ func statusHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		Name   string
-		Output string
-		Config string
+		Name    string
+		Output  string
+		Config  string
+		Version string
 	}{
-		Name:   service,
-		Output: string(outStatus),
-		Config: configStr,
+		Name:    service,
+		Output:  string(outStatus),
+		Config:  configStr,
+		Version: version,
 	}
 
 	t, err := template.New("status").Parse(statusTemplate)
@@ -814,11 +823,13 @@ func dependenciesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := struct {
-		Name   string
-		Output string
+		Name    string
+		Output  string
+		Version string
 	}{
-		Name:   service,
-		Output: outputStr,
+		Name:    service,
+		Output:  outputStr,
+		Version: version,
 	}
 
 	t, err := template.New("dependencies").Parse(dependenciesTemplate)
