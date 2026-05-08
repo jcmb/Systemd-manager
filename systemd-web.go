@@ -25,16 +25,17 @@ type ServiceData struct {
 	Description string
 	Class       string
 	// Extended metrics (from systemctl show)
-	Enabled      string
-	Uptime       string
-	UptimeSort   int64 // seconds since active (for sorting); -1 if n/a
-	Restarts     string
-	RestartsSort int
-	Memory       string // human display
-	MemCurSort   uint64
-	MemPeakSort  uint64
-	Tasks        string
-	TasksSort    int
+	Enabled       string
+	Uptime        string
+	UptimeSort    int64 // seconds since active (for sorting); -1 if n/a
+	Restarts      string
+	RestartsSort  int
+	MemCurrent    string  // MiB
+	MemPeak       string  // MiB
+	MemCurSort    float64 // MiB for sorting; -1 if n/a
+	MemPeakSort   float64 // MiB for sorting; -1 if n/a
+	Tasks         string
+	TasksSort     int
 }
 
 // Common CSS/JS injected into all templates to handle themes
@@ -155,7 +156,7 @@ const dashboardTemplate = `
 	` + themeAssets + `
 	<style>
 		.table-wrap { overflow-x: auto; margin-bottom: 20px; }
-		table { border-collapse: collapse; width: 100%; min-width: 1100px; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+		table { border-collapse: collapse; width: 100%; min-width: 1220px; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 		th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--table-border); font-size: 14px; }
 		th { background-color: var(--th-bg); cursor: pointer; user-select: none; white-space: nowrap; }
 		th:hover { background-color: var(--th-hover); }
@@ -178,7 +179,7 @@ const dashboardTemplate = `
 	</div>
 
 	<div class="table-wrap">
-	<table id="serviceTable">
+		<table id="serviceTable">
 		<thead>
 			<tr>
 				<th onclick="sortTable(0)">Service &#x21D5;</th>
@@ -186,10 +187,11 @@ const dashboardTemplate = `
 				<th onclick="sortTable(2)">State &#x21D5;</th>
 				<th onclick="sortTable(3)">Uptime &#x21D5;</th>
 				<th class="num" onclick="sortTable(4)">Restarts &#x21D5;</th>
-				<th onclick="sortTable(5)">Memory (cur / peak) &#x21D5;</th>
-				<th onclick="sortTable(6)">Enabled &#x21D5;</th>
-				<th class="num" onclick="sortTable(7)">Tasks &#x21D5;</th>
-				<th onclick="sortTable(8)">Description &#x21D5;</th>
+				<th class="num" onclick="sortTable(5)">Mem cur (MiB) &#x21D5;</th>
+				<th class="num" onclick="sortTable(6)">Mem peak (MiB) &#x21D5;</th>
+				<th onclick="sortTable(7)">Enabled &#x21D5;</th>
+				<th class="num" onclick="sortTable(8)">Tasks &#x21D5;</th>
+				<th onclick="sortTable(9)">Description &#x21D5;</th>
 				<th>Controls</th>
 			</tr>
 		</thead>
@@ -201,7 +203,8 @@ const dashboardTemplate = `
 				<td>{{.Sub}}</td>
 				<td class="mono-sm" data-sort="{{.UptimeSort}}">{{.Uptime}}</td>
 				<td class="num" data-sort="{{.RestartsSort}}">{{.Restarts}}</td>
-				<td class="mono-sm" data-sort="{{.MemCurSort}}">{{.Memory}}</td>
+				<td class="num mono-sm" data-sort="{{printf "%.6f" .MemCurSort}}">{{.MemCurrent}}</td>
+				<td class="num mono-sm" data-sort="{{printf "%.6f" .MemPeakSort}}">{{.MemPeak}}</td>
 				<td data-sort="{{.Enabled}}">{{.Enabled}}</td>
 				<td class="num" data-sort="{{.TasksSort}}">{{.Tasks}}</td>
 				<td>{{.Description}}</td>
@@ -474,22 +477,20 @@ func parseByteProp(s string) (uint64, bool) {
 	return n, true
 }
 
-func formatBytesIEC(b uint64) string {
-	if b == 0 {
-		return "0 B"
+const bytesPerMiB = 1024 * 1024
+
+func formatMiB(bytes uint64, ok bool) string {
+	if !ok {
+		return "—"
 	}
-	v := float64(b)
-	const k = 1024
-	unit := 0
-	units := []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
-	for v >= k && unit < len(units)-1 {
-		v /= k
-		unit++
+	return fmt.Sprintf("%.2f MiB", float64(bytes)/bytesPerMiB)
+}
+
+func mibSort(bytes uint64, ok bool) float64 {
+	if !ok {
+		return -1
 	}
-	if unit == 0 {
-		return fmt.Sprintf("%d B", b)
-	}
-	return fmt.Sprintf("%.1f %s", v, units[unit])
+	return float64(bytes) / bytesPerMiB
 }
 
 func parseActiveEnterTimestamp(val string) (time.Time, bool) {
@@ -559,6 +560,22 @@ func formatTasks(cur, max string) (display string, sortN int) {
 	return cur + " / " + max, n
 }
 
+// servicePassesFilter keeps rows that are running now or are enabled / static at the unit-file level.
+func servicePassesFilter(activeFromList string, p map[string]string) bool {
+	if strings.TrimSpace(activeFromList) == "active" {
+		return true
+	}
+	if p == nil {
+		return false
+	}
+	switch strings.TrimSpace(p["UnitFileState"]) {
+	case "enabled", "enabled-runtime", "static":
+		return true
+	default:
+		return false
+	}
+}
+
 func applyServiceProps(row *ServiceData, p map[string]string) {
 	if len(p) == 0 {
 		row.Enabled = "—"
@@ -566,9 +583,10 @@ func applyServiceProps(row *ServiceData, p map[string]string) {
 		row.UptimeSort = -1
 		row.Restarts = "—"
 		row.RestartsSort = 0
-		row.Memory = "—"
-		row.MemCurSort = 0
-		row.MemPeakSort = 0
+		row.MemCurrent = "—"
+		row.MemPeak = "—"
+		row.MemCurSort = -1
+		row.MemPeakSort = -1
 		row.Tasks = "—"
 		row.TasksSort = -1
 		return
@@ -605,20 +623,10 @@ func applyServiceProps(row *ServiceData, p map[string]string) {
 
 	mc, mcOk := parseByteProp(p["MemoryCurrent"])
 	mp, mpOk := parseByteProp(p["MemoryPeak"])
-	row.MemCurSort = mc
-	row.MemPeakSort = mp
-	if !mcOk && !mpOk {
-		row.Memory = "—"
-	} else {
-		curS, peakS := "—", "—"
-		if mcOk {
-			curS = formatBytesIEC(mc)
-		}
-		if mpOk {
-			peakS = formatBytesIEC(mp)
-		}
-		row.Memory = curS + " / " + peakS
-	}
+	row.MemCurrent = formatMiB(mc, mcOk)
+	row.MemPeak = formatMiB(mp, mpOk)
+	row.MemCurSort = mibSort(mc, mcOk)
+	row.MemPeakSort = mibSort(mp, mpOk)
 
 	row.Tasks, row.TasksSort = formatTasks(p["TasksCurrent"], p["TasksMax"])
 }
@@ -688,6 +696,15 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 			applyServiceProps(&services[i], nil)
 		}
 	}
+
+	filtered := services[:0]
+	for i := range services {
+		p, _ := props[services[i].Name]
+		if servicePassesFilter(services[i].Active, p) {
+			filtered = append(filtered, services[i])
+		}
+	}
+	services = filtered
 
 	t, err := template.New("index").Parse(dashboardTemplate)
 	if err != nil {
