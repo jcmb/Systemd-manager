@@ -156,7 +156,7 @@ const dashboardTemplate = `
 	` + themeAssets + `
 	<style>
 		.table-wrap { overflow-x: auto; margin-bottom: 20px; }
-		table { border-collapse: collapse; width: 100%; min-width: 1220px; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+		table { border-collapse: collapse; width: 100%; min-width: 1380px; background: var(--table-bg); box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
 		th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--table-border); font-size: 14px; }
 		th { background-color: var(--th-bg); cursor: pointer; user-select: none; white-space: nowrap; }
 		th:hover { background-color: var(--th-hover); }
@@ -214,6 +214,8 @@ const dashboardTemplate = `
 						<button type="submit" name="action" value="start">Start</button>
 						<button type="submit" name="action" value="stop">Stop</button>
 						<button type="submit" name="action" value="restart">Restart</button>
+						<button type="submit" name="action" value="enable">Enable</button>
+						<button type="submit" name="action" value="disable">Disable</button>
 					</form>
 					<form method="GET" action="/dependencies" style="display:inline;">
 						<input type="hidden" name="service" value="{{.Name}}">
@@ -290,6 +292,8 @@ const statusTemplate = `
 	<style>
 		pre { background: var(--pre-bg); padding: 20px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; border: 1px solid var(--pre-border); font-family: monospace; font-size: 14px;}
 		h3 { margin-top: 30px; color: var(--link-color); border-bottom: 1px solid var(--table-border); padding-bottom: 5px; }
+		.service-controls { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 20px; align-items: center; }
+		.service-controls form { display: inline; }
 	</style>
 </head>
 <body>
@@ -307,7 +311,23 @@ const statusTemplate = `
 			</select>
 		</div>
 	</div>
-	
+
+	<div class="service-controls">
+		<form method="POST" action="/action">
+			<input type="hidden" name="service" value="{{.Name}}">
+			<input type="hidden" name="redirect" value="status">
+			<button type="submit" name="action" value="start">Start</button>
+			<button type="submit" name="action" value="stop">Stop</button>
+			<button type="submit" name="action" value="restart">Restart</button>
+			<button type="submit" name="action" value="enable">Enable</button>
+			<button type="submit" name="action" value="disable">Disable</button>
+		</form>
+		<form method="GET" action="/dependencies">
+			<input type="hidden" name="service" value="{{.Name}}">
+			<button type="submit">Deps</button>
+		</form>
+	</div>
+
 	<h3>Live Status & Recent Logs</h3>
 	<pre>{{.Output}}</pre>
 
@@ -792,8 +812,15 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 	r.ParseForm()
 	service := r.FormValue("service")
 	action := r.FormValue("action")
+	redirect := r.FormValue("redirect")
 
-	validActions := map[string]bool{"start": true, "stop": true, "restart": true}
+	validActions := map[string]bool{
+		"start":   true,
+		"stop":    true,
+		"restart": true,
+		"enable":  true,
+		"disable": true,
+	}
 
 	if isValidServiceName(service) && validActions[action] {
 		cmd := exec.Command("sudo", "systemctl", action, service)
@@ -803,7 +830,11 @@ func actionHandler(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	target := "/"
+	if redirect == "status" && isValidServiceName(service) {
+		target = "/status?service=" + service
+	}
+	http.Redirect(w, r, target, http.StatusSeeOther)
 }
 
 func main() {
